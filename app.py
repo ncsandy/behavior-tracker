@@ -133,7 +133,7 @@ def add_reward():
 def edit_reward(reward_id):
     if not session.get("admin_authenticated"):
         return redirect(url_for("admin_login"))
-    reward = Reward.query.get(reward_id)
+    reward = db.session.get(Reward, reward_id)
     if reward:
         reward.name = request.form.get("name")
         reward.cost = request.form.get("cost", type=int)
@@ -144,7 +144,7 @@ def edit_reward(reward_id):
 def delete_reward(reward_id):
     if not session.get("admin_authenticated"):
         return redirect(url_for("admin_login"))
-    reward = Reward.query.get(reward_id)
+    reward = db.session.get(Reward, reward_id)
     if reward:
         db.session.delete(reward)
         db.session.commit()
@@ -195,7 +195,7 @@ def index():
             points.total = max(0, points.total - 1)
         elif action.startswith("redeem:"):
             reward_id = int(action.split(":")[1])
-            reward = Reward.query.get(reward_id)
+            reward = db.session.get(Reward, reward_id)
             if reward and points.total >= reward.cost:
                 points.total -= reward.cost
                 db.session.add(Redemption(reward=reward))

@@ -44,7 +44,6 @@ def test_login_page_loads(client):
     assert response.status_code == 200
     assert b"PIN" in response.data  # Or whatever keyword is in your login template
 
-
 def test_login_logout(client):
     assert client.post("/login", data={"pin": "1234"}, follow_redirects=True).status_code == 200
     assert b"Made the bed" in client.get("/").data
@@ -167,7 +166,6 @@ def test_update_points_no_points_record(client):
     # Should not raise error; gracefully skip commit
     assert response.status_code == 302
 
-
 def test_behavior_log_entry(client):
     client.post("/login", data={"pin": "1234"}, follow_redirects=True)
     client.post("/", data={"action": "made_bed"})
@@ -216,7 +214,6 @@ def test_index_post_redeem(client):
     client.post("/", data={"action": f"redeem:{reward.id}"})
     assert Redemption.query.filter_by(reward_id=reward.id).count() == 1
     assert Points.query.first().total == 0
-
 
 def test_simulate_streak(client):
     client.post("/admin", data={"pin": "9999"}, follow_redirects=True)
