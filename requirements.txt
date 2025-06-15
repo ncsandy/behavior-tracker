@@ -1,4 +1,5 @@
 Flask
 Flask_SQLAlchemy
 pytz
-pytestpytest-cov
+pytest
+pytest-cov
