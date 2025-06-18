@@ -3,3 +3,4 @@ firebase-admin
 pytz
 pytest
 pytest-cov
+gunicorn
