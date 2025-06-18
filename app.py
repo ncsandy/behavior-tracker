@@ -5,6 +5,8 @@ import pytz
 import firebase_admin
 from firebase_admin import credentials, firestore, initialize_app
 from werkzeug.security import generate_password_hash, check_password_hash
+import json
+import os
 
 
 tz = pytz.timezone("America/New_York")
@@ -14,7 +16,11 @@ app.secret_key = "your-secure-secret-key"
 app.permanent_session_lifetime = timedelta(hours=6)
 
 # Firebase setup
-cred = credentials.Certificate("secrets/firebase-key.json")  # make sure this path matches
+firebase_key_json = os.environ.get("FIREBASE_KEY_JSON")
+if not firebase_key_json:
+    raise RuntimeError("FIREBASE_KEY_JSON is not set")
+
+cred = credentials.Certificate(json.loads(firebase_key_json))
 firebase_admin.initialize_app(cred)
 fs = firestore.client()
 
