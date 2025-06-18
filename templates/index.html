@@ -140,7 +140,7 @@
   <ul class="list-group fade-in">
     {% for redemption in redemptions %}
       <li class="list-group-item">
-        <i class="bi bi-arrow-repeat"></i> {{ redemption.timestamp.strftime('%Y-%m-%d %H:%M:%S') }} — {{ redemption.reward.name }}
+       <i class="bi bi-arrow-repeat"></i> {{ redemption.timestamp.strftime('%Y-%m-%d %H:%M:%S') }} — {{ redemption.reward_name }}
       </li>
     {% endfor %}
   </ul>

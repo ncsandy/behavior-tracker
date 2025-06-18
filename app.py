@@ -1,8 +1,11 @@
 from collections import defaultdict
 from flask import Flask, render_template, request, redirect, url_for, session
-from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
 import pytz
+import firebase_admin
+from firebase_admin import credentials, firestore, initialize_app
+from werkzeug.security import generate_password_hash, check_password_hash
+
 
 tz = pytz.timezone("America/New_York")
 
@@ -10,9 +13,10 @@ app = Flask(__name__)
 app.secret_key = "your-secure-secret-key"
 app.permanent_session_lifetime = timedelta(hours=6)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///./behavior.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
+# Firebase setup
+cred = credentials.Certificate("secrets/firebase-key.json")  # make sure this path matches
+firebase_admin.initialize_app(cred)
+fs = firestore.client()
 
 def ordinal(n):
     if 11 <= n % 100 <= 13:
@@ -24,52 +28,63 @@ def ordinal(n):
 app.jinja_env.filters['ordinal'] = ordinal
 
 # Models
-class BehaviorLog(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(tz))
-    entry_type = db.Column(db.String(50))
-    task_key = db.Column(db.String(50))
 
-class Points(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    total = db.Column(db.Integer, default=0)
+fs.collection("points").document("singleton").set({"total": 0})
 
-class Reward(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100))
-    cost = db.Column(db.Integer)
-
-class Redemption(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    reward_id = db.Column(db.Integer, db.ForeignKey('reward.id'))
-    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(tz))
-    reward = db.relationship("Reward")
+fs.collection("redemptions").add({
+    "timestamp": datetime.now(tz),
+    "reward": {
+        "id": "abc123",
+        "name": "New Toy",
+        "cost": 100
+    }
+})
 
 # Setup
 def setup():
-    with app.app_context():
-        db.create_all()
-        if Points.query.first() is None:
-            db.session.add(Points(total=0))
-        if Reward.query.count() == 0:
-            db.session.add_all([
-                Reward(name="1 Extra Hour of Screen Time", cost=20),
-                Reward(name="Dessert", cost=25),
-                Reward(name="Outdoor time", cost=10),
-                Reward(name="New toy", cost=100),
-                Reward(name="New book", cost=70),
-            ])
-        db.session.commit()
+    # Initialize points document if it doesn't exist
+    points_ref = fs.collection("points").document("singleton")
+    if not points_ref.get().exists:
+        points_ref.set({"total": 0})
+
+    # Initialize rewards if collection is empty
+    if not list(fs.collection("rewards").limit(1).stream()):
+        default_rewards = [
+            {"name": "1 Extra Hour of Screen Time", "cost": 20},
+            {"name": "Dessert", "cost": 25},
+            {"name": "Outdoor time", "cost": 10},
+            {"name": "New toy", "cost": 100},
+            {"name": "New book", "cost": 70},
+        ]
+        for reward in default_rewards:
+            fs.collection("rewards").add(reward)
+
+    # Initialize admin password
+    admin_ref = fs.collection("auth").document("admin")
+    if not admin_ref.get().exists:
+        hashed_admin_pin = generate_password_hash("9999")
+        admin_ref.set({"password": hashed_admin_pin})
+    # Initialize user password if not already set
+    auth_ref = fs.collection("auth").document("user")
+    if not auth_ref.get().exists:
+        hashed_password = generate_password_hash("1234")
+        auth_ref.set({"password": hashed_password})
+
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         pin = request.form.get("pin")
-        if pin == "1234":
-            session["authenticated"] = True
-            return redirect(url_for("index"))
-        else:
-            return render_template("login.html", error="Incorrect PIN")
+        user_doc = fs.collection("auth").document("user").get()
+
+        if user_doc.exists:
+            stored_hash = user_doc.to_dict().get("password")
+            if stored_hash and check_password_hash(stored_hash, pin):
+                session["authenticated"] = True
+                return redirect(url_for("index"))
+
+        return render_template("login.html", error="Incorrect PIN")
+
     return render_template("login.html")
 
 @app.route("/logout")
@@ -81,11 +96,16 @@ def logout():
 def admin_login():
     if request.method == "POST":
         pin = request.form.get("pin")
-        if pin == "9999":
-            session["admin_authenticated"] = True
-            return redirect(url_for("manage_rewards"))
-        else:
-            return render_template("admin_login.html", error="Incorrect admin PIN")
+        user_doc = fs.collection("auth").document("admin").get()
+
+        if user_doc.exists:
+            stored_hash = user_doc.to_dict().get("password")
+            if stored_hash and check_password_hash(stored_hash, pin):
+                session["admin_authenticated"] = True
+                return redirect(url_for("manage_rewards"))
+
+        return render_template("admin_login.html", error="Incorrect admin PIN")
+
     return render_template("admin_login.html")
 
 @app.route("/admin/logout")
@@ -97,9 +117,20 @@ def admin_logout():
 def manage_rewards():
     if not session.get("admin_authenticated"):
         return redirect(url_for("admin_login"))
-    rewards = Reward.query.order_by(Reward.id).all()
-    points = Points.query.first()
-    return render_template("rewards.html", rewards=rewards, current_points=points.total if points else 0)
+
+    # Get all rewards, ordered by name (since there's no numeric ID to sort on)
+    rewards_query = fs.collection("rewards").stream()
+    rewards = sorted(
+        [doc.to_dict() | {"id": doc.id} for doc in rewards_query],
+        key=lambda r: r["name"].lower()
+    )
+
+    # Get current points
+    points_doc = fs.collection("points").document("singleton").get()
+    current_points = points_doc.to_dict().get("total", 0) if points_doc.exists else 0
+
+    return render_template("rewards.html", rewards=rewards, current_points=current_points)
+
 
 @app.route("/update_points", methods=["POST"])
 def update_points():
@@ -111,10 +142,12 @@ def update_points():
     except ValueError:
         new_total = 0
 
-    points = Points.query.first()
-    if points:
-        points.total = max(0, new_total)
-        db.session.commit()
+    new_total = max(0, new_total)  # Prevent negative values
+
+    # Update Firestore points document
+    fs.collection("points").document("singleton").set({
+        "total": new_total
+    }, merge=True)
 
     return redirect(url_for("manage_rewards"))
 
@@ -122,32 +155,42 @@ def update_points():
 def add_reward():
     if not session.get("admin_authenticated"):
         return redirect(url_for("admin_login"))
+
     name = request.form.get("name")
     cost = request.form.get("cost", type=int)
-    if name and cost:
-        db.session.add(Reward(name=name, cost=cost))
-        db.session.commit()
+
+    if name and cost is not None:
+        fs.collection("rewards").add({
+            "name": name,
+            "cost": cost
+        })
+
     return redirect(url_for("manage_rewards"))
 
-@app.route("/edit_reward/<int:reward_id>", methods=["POST"])
+
+@app.route("/edit_reward/<reward_id>", methods=["POST"])
 def edit_reward(reward_id):
     if not session.get("admin_authenticated"):
         return redirect(url_for("admin_login"))
-    reward = db.session.get(Reward, reward_id)
-    if reward:
-        reward.name = request.form.get("name")
-        reward.cost = request.form.get("cost", type=int)
-        db.session.commit()
+
+    name = request.form.get("name")
+    cost = request.form.get("cost", type=int)
+
+    if name and cost is not None:
+        fs.collection("rewards").document(reward_id).update({
+            "name": name,
+            "cost": cost
+        })
+
     return redirect(url_for("manage_rewards"))
 
-@app.route("/delete_reward/<int:reward_id>", methods=["POST"])
+@app.route("/delete_reward/<reward_id>", methods=["POST"])
 def delete_reward(reward_id):
     if not session.get("admin_authenticated"):
         return redirect(url_for("admin_login"))
-    reward = db.session.get(Reward, reward_id)
-    if reward:
-        db.session.delete(reward)
-        db.session.commit()
+
+    fs.collection("rewards").document(reward_id).delete()
+
     return redirect(url_for("manage_rewards"))
 
 @app.route("/", methods=["GET", "POST"])
@@ -155,7 +198,6 @@ def index():
     if not session.get("authenticated"):
         return redirect(url_for("login"))
 
-    points = Points.query.first()
     valid_actions = {
         "made_bed": "Made the bed",
         "brushed_teeth": "Brushed teeth",
@@ -169,53 +211,91 @@ def index():
     now_local = datetime.now(tz)
     today = now_local.date()
     today_start = tz.localize(datetime(today.year, today.month, today.day))
+    today_end = today_start + timedelta(days=1)
 
-    today_logs = BehaviorLog.query.filter(
-        BehaviorLog.timestamp >= today_start,
-        BehaviorLog.timestamp < today_start + timedelta(days=1)
-    ).all()
-    completed_today = {log.task_key for log in today_logs if log.task_key}
+    # Fetch all today's logs
+    logs_query = fs.collection("behavior_logs") \
+        .where("timestamp", ">=", today_start) \
+        .where("timestamp", "<", today_end) \
+        .stream()
+    today_logs = [doc.to_dict() | {"id": doc.id} for doc in logs_query]
+    completed_today = {log.get("task_key") for log in today_logs if log.get("task_key")}
+
+    # Fetch current points
+    points_doc = fs.collection("points").document("singleton").get()
+    points = points_doc.to_dict() if points_doc.exists else {"total": 0}
 
     if request.method == "POST":
         action = request.form.get("action")
+
         if action in valid_actions:
-            existing_log = BehaviorLog.query.filter(
-                BehaviorLog.task_key == action,
-                BehaviorLog.timestamp >= today_start,
-                BehaviorLog.timestamp < today_start + timedelta(days=1)
-            ).first()
-            if existing_log:
-                db.session.delete(existing_log)
-                points.total = max(0, points.total - 1)
+            existing_logs = fs.collection("behavior_logs") \
+                .where("task_key", "==", action) \
+                .where("timestamp", ">=", today_start) \
+                .where("timestamp", "<", today_end) \
+                .stream()
+
+            for existing_log in existing_logs:
+                fs.collection("behavior_logs").document(existing_log.id).delete()
+                points["total"] = max(0, points["total"] - 1)
+                break
+
             else:
-                db.session.add(BehaviorLog(entry_type=valid_actions[action], task_key=action))
-                points.total += 1
+                fs.collection("behavior_logs").add({
+                    "timestamp": datetime.now(tz),
+                    "entry_type": valid_actions[action],
+                    "task_key": action
+                })
+                points["total"] += 1
+
         elif action == "bad":
-            db.session.add(BehaviorLog(entry_type="Needs improvement"))
-            points.total = max(0, points.total - 1)
+            fs.collection("behavior_logs").add({
+                "timestamp": datetime.now(tz),
+                "entry_type": "Needs improvement"
+            })
+            points["total"] = max(0, points["total"] - 1)
+
         elif action.startswith("redeem:"):
-            reward_id = int(action.split(":")[1])
-            reward = db.session.get(Reward, reward_id)
-            if reward and points.total >= reward.cost:
-                points.total -= reward.cost
-                db.session.add(Redemption(reward=reward))
-        db.session.commit()
+            reward_id = action.split(":")[1]
+            reward_doc = fs.collection("rewards").document(reward_id).get()
+            reward = reward_doc.to_dict()
+            if reward and points["total"] >= reward["cost"]:
+                points["total"] -= reward["cost"]
+                fs.collection("redemptions").add({
+                    "timestamp": datetime.now(tz),
+                    "reward_id": reward_id,
+                    "reward_name": reward["name"]
+                })
+
+        fs.collection("points").document("singleton").set(points)
         return redirect(url_for("index"))
 
-    logs = BehaviorLog.query.order_by(BehaviorLog.timestamp.desc()).all()
-    rewards = Reward.query.all()
-    redemptions = Redemption.query.order_by(Redemption.timestamp.desc()).all()
+    # Fetch logs, rewards, redemptions
+    logs = [doc.to_dict() for doc in fs.collection("behavior_logs").order_by("timestamp", direction=firestore.Query.DESCENDING).stream()]
+    rewards = [{**doc.to_dict(), "id": doc.id} for doc in fs.collection("rewards").stream()]
+    redemptions = []
+    redemption_docs = fs.collection("redemptions").order_by("timestamp", direction=firestore.Query.DESCENDING).stream()
 
+    for doc in redemption_docs:
+        data = doc.to_dict()
+        reward_id = data.get("reward_id")
+        reward_doc = fs.collection("rewards").document(str(reward_id)).get()
+        reward_data = reward_doc.to_dict() if reward_doc.exists else {}
+        data["reward_name"] = reward_data.get("name", "Unknown Reward")
+        redemptions.append(data)
+
+    # History and streaks
     one_year_ago = today - timedelta(days=364)
-    logs_last_year = BehaviorLog.query.filter(
-        BehaviorLog.timestamp >= tz.localize(datetime(one_year_ago.year, one_year_ago.month, one_year_ago.day))
-    ).all()
-
+    year_logs = fs.collection("behavior_logs") \
+        .where("timestamp", ">=", tz.localize(datetime(one_year_ago.year, one_year_ago.month, one_year_ago.day))) \
+        .stream()
+    
     daily_task_map = defaultdict(set)
-    for log in logs_last_year:
-        local_date = log.timestamp.astimezone(tz).strftime('%Y-%m-%d')
-        if log.task_key:
-            daily_task_map[local_date].add(log.task_key)
+    for log_doc in year_logs:
+        log = log_doc.to_dict()
+        if log.get("task_key"):
+            date_str = log["timestamp"].astimezone(tz).strftime('%Y-%m-%d')
+            daily_task_map[date_str].add(log["task_key"])
 
     history = {}
     for i in range(365):
@@ -227,8 +307,8 @@ def index():
     for key in valid_actions.keys():
         streak = 0
         for i in range(365):
-            day = (today - timedelta(days=i)).strftime('%Y-%m-%d')
-            if key in history.get(day, set()):
+            date_str = (today - timedelta(days=i)).strftime('%Y-%m-%d')
+            if key in history.get(date_str, set()):
                 streak += 1
             else:
                 break
@@ -237,7 +317,7 @@ def index():
     return render_template(
         "index.html",
         logs=logs,
-        points=points.total,
+        points=points["total"],
         rewards=rewards,
         redemptions=redemptions,
         tasks=valid_actions,
@@ -249,40 +329,6 @@ def index():
         task_streaks=task_streaks
     )
 
-@app.route("/debug/simulate_streak120/<task_key>")
-def simulate_streak_120(task_key):
-    if not session.get("admin_authenticated"):
-        return redirect(url_for("admin_login"))
-
-    valid_tasks = {
-        "made_bed", "brushed_teeth", "listened",
-        "clean_up", "stay_in_bed", "use_manners", "clean_toys"
-    }
-    if task_key not in valid_tasks:
-        return f"Invalid task key: {task_key}", 400
-
-    now = datetime.now(tz)
-    for i in range(120):
-        day = now - timedelta(days=i)
-        start = tz.localize(datetime(day.year, day.month, day.day))
-        end = start + timedelta(days=1)
-
-        already_logged = BehaviorLog.query.filter(
-            BehaviorLog.task_key == task_key,
-            BehaviorLog.timestamp >= start,
-            BehaviorLog.timestamp < end
-        ).first()
-
-        if not already_logged:
-            db.session.add(BehaviorLog(
-                timestamp=start + timedelta(hours=9),
-                entry_type=f"Simulated {task_key} (day {i+1})",
-                task_key=task_key
-            ))
-
-    db.session.commit()
-    return f"Simulated 120-day streak for task '{task_key}'.", 200
-
 if __name__ == "__main__":
     setup()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5500, debug=True)
