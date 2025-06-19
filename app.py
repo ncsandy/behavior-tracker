@@ -130,8 +130,12 @@ def manage_rewards():
     )
 
     # Get current points
-    points_doc = fs.collection("points").document("singleton").get()
-    current_points = points_doc.to_dict().get("total", 0) if points_doc.exists else 0
+    point_total = sum(1 for log in today_logs if log.get("task_key"))
+
+    # Save back to Firestore (optional — helps admin see current total)
+    fs.collection("points").document("singleton").set({"total": point_total})
+
+    points = {"total": point_total}
 
     return render_template("rewards.html", rewards=rewards, current_points=current_points)
 
