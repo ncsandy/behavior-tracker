@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -57,8 +56,10 @@
     ✨🌟 Awesome Behavior Tracker 🌟✨
   </h1>
 
-  <p class="lead fade-in text-center"><strong>🌟 Stars: </strong>{{ points }} |
-    <strong>{{ now.strftime('%B') }} {{ now.day|ordinal }}, {{ now.year }} {{ now.strftime('%I:%M %p') }}</strong></p>
+  <p class="lead fade-in text-center">
+    <strong>🌟 Stars: </strong><span id="live-points">{{ points }}</span> |
+    <strong>{{ now.strftime('%B') }} {{ now.day|ordinal }}, {{ now.year }} {{ now.strftime('%I:%M %p') }}</strong>
+  </p>
 
   <h2 class="mt-4 fade-in">Daily Tasks</h2>
   <form method="post" class="row row-cols-1 row-cols-sm-2 row-cols-md-3 g-3 fade-in task-grid">
@@ -79,15 +80,15 @@
             <div class="emoji mb-2">
               <img src="{{ url_for('static', filename='icons/' ~ key ~ '.png') }}" alt="{{ label }}" width="48" height="48">
             </div>
-<h5 class="card-title text-{{ 'success' if key in completed_today else 'secondary' }}">
-  {{ label }}
-  {% for i in range(task_streaks[key] // 3) %}
-    <span class="text-warning">🔥</span>
-  {% endfor %}
-</h5>
-<p class="card-text small text-muted">
-  Streak: {{ task_streaks[key] }} day{{ '' if task_streaks[key] == 1 else 's' }}
-</p>
+            <h5 class="card-title text-{{ 'success' if key in completed_today else 'secondary' }}">
+              {{ label }}
+              {% for i in range(task_streaks[key] // 3) %}
+                <span class="text-warning">🔥</span>
+              {% endfor %}
+            </h5>
+            <p class="card-text small text-muted">
+              Streak: {{ task_streaks[key] }} day{{ '' if task_streaks[key] == 1 else 's' }}
+            </p>
             <p class="card-text small">{{ '✅ Done!' if key in completed_today else 'Tap to complete' }}</p>
           </div>
         </button>
@@ -140,7 +141,7 @@
   <ul class="list-group fade-in">
     {% for redemption in redemptions %}
       <li class="list-group-item">
-       <i class="bi bi-arrow-repeat"></i> {{ redemption.timestamp.strftime('%Y-%m-%d %H:%M:%S') }} — {{ redemption.reward_name }}
+        <i class="bi bi-arrow-repeat"></i> {{ redemption.timestamp.strftime('%Y-%m-%d %H:%M:%S') }} — {{ redemption.reward_name }}
       </li>
     {% endfor %}
   </ul>
@@ -163,14 +164,55 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyAkYYzN3Wkl3bNS6sFx3SCPXsWScnmHpw0",
+    authDomain: "behavior-app-98099.firebaseapp.com",
+    projectId: "behavior-app-98099"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.firestore();
+
+  const pointsRef = db.collection("points").doc("singleton");
+  pointsRef.onSnapshot(doc => {
+    const data = doc.data();
+    const newTotal = data.total || 0;
+    const pointsDisplay = document.getElementById("live-points");
+    if (pointsDisplay) {
+      pointsDisplay.textContent = newTotal;
+    }
+    document.querySelectorAll(".card-body").forEach(card => {
+      const rewardText = card.querySelector("span");
+      const bar = card.querySelector(".star-display");
+      if (!rewardText || !bar) return;
+      const match = rewardText.innerText.match(/\/ (\d+)/);
+      if (!match) return;
+      const cost = parseInt(match[1]);
+      const earned = Math.min(newTotal, cost);
+      rewardText.innerText = `${newTotal} / ${cost} stars`;
+      bar.innerHTML = '';
+      for (let i = 0; i < earned; i++) {
+        const star = document.createElement('span');
+        star.className = 'star-animate';
+        star.textContent = '⭐';
+        bar.appendChild(star);
+      }
+      for (let i = 0; i < cost - earned; i++) {
+        const star = document.createElement('span');
+        star.textContent = '☆';
+        bar.appendChild(star);
+      }
+    });
+  });
+</script>
 <script>
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.has('confetti')) {
-    confetti({
-      particleCount: 120,
-      spread: 100,
-      origin: { y: 0.6 }
-    });
+    confetti({ particleCount: 120, spread: 100, origin: { y: 0.6 } });
   }
 </script>
 
