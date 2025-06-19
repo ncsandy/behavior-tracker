@@ -35,8 +35,6 @@ app.jinja_env.filters['ordinal'] = ordinal
 
 # Models
 
-fs.collection("points").document("singleton").set({"total": 0})
-
 fs.collection("redemptions").add({
     "timestamp": datetime.now(tz),
     "reward": {
