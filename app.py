@@ -233,24 +233,27 @@ def index():
         action = request.form.get("action")
 
         if action in valid_actions:
-            existing_logs = fs.collection("behavior_logs") \
-                .where("task_key", "==", action) \
-                .where("timestamp", ">=", today_start) \
-                .where("timestamp", "<", today_end) \
-                .stream()
+            existing_logs = list(fs.collection("behavior_logs")
+                .where("task_key", "==", action)
+                .where("timestamp", ">=", today_start)
+                .where("timestamp", "<", today_end)
+                .stream())
 
-            for existing_log in existing_logs:
-                fs.collection("behavior_logs").document(existing_log.id).delete()
-                points["total"] = max(0, points["total"] - 1)
-                break
-
+            if existing_logs:
+                # Already logged — skip or remove
+                for log in existing_logs:
+                    fs.collection("behavior_logs").document(log.id).delete()
+                    points["total"] = max(0, points["total"] - 1)
+                    break
             else:
+                # Add new log and increment point
                 fs.collection("behavior_logs").add({
                     "timestamp": datetime.now(tz),
                     "entry_type": valid_actions[action],
                     "task_key": action
                 })
                 points["total"] += 1
+
 
         elif action == "bad":
             fs.collection("behavior_logs").add({
